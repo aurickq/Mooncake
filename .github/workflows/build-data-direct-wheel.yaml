@@ -1,0 +1,19 @@
+name: Build Data Direct wheel
+
+on:
+  push:
+    branches:
+      - codex/rdma-data-direct-wheel-test
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build-wheel.yaml
+    with:
+      variant: cuda13
+      architecture: arm64
+      python-versions: '["3.13"]'
+      artifact-prefix: mooncake-data-direct-cuda13-arm64
+      version-override: 0.3.13+datadirect.c6fc7e14
