@@ -20,7 +20,8 @@ The GPU needs at least 1 GiB free after CUDA context initialization. Explicit
 payload storage is 1 MiB per process, plus the CUDA context and allocator cache.
 
 The runner creates separate temporary wheel installations and starts fresh
-processes for each condition:
+processes for each condition. A random per-run token pairs the TCP control
+connection even when a proxy rewrites its source address:
 
 - `MC_RDMA_DATA_DIRECT=1`: PCIe DMA-BUF export and mlx5 Data Direct registration.
 - `MC_RDMA_DATA_DIRECT=0`: ordinary CUDA DMA-BUF export and registration.

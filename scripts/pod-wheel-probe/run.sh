@@ -71,10 +71,13 @@ launch_probe() {
     exec "${k[@]}" exec "$pod" -c "$container" -- timeout -k 5s 90s \
         env -u LD_PRELOAD -u PYTHONOPTIMIZE PYTHONPATH="$remote/wheel" "$python" -u "$remote/probe.py" "$role" \
         --local-ip "$local_ip" --peer-ip "$peer_ip" --control-port "$port" \
+        --control-token "$control_token" \
         --gpu "$gpu" --nic "$nic" --gid-index "$gid" --wheel-root "$remote/wheel" --data-direct "$dd"
 }
 overall=0
 for dd in 1 0; do
+    control_token=$("${k[@]}" exec "$prefill" -c "$container" -- "$python" -c 'import secrets; print(secrets.token_hex(16))')
+    [[ "$control_token" =~ ^[0-9a-f]{32}$ ]] || { printf 'Invalid control token.\n' >&2; exit 1; }
     target_log="$logs/dd$dd-target.log"; source_log="$logs/dd$dd-initiator.log"
     printf 'Starting DD%s; each remote process has a 90-second limit.\n' "$dd"
     (launch_probe "$decode" "$decode_dir" target "$decode_ip" "$prefill_ip" "$dd" 0) > "$target_log" 2>&1 &

@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--local-ip", required=True)
     parser.add_argument("--peer-ip", required=True)
     parser.add_argument("--control-port", type=int, default=0)
+    parser.add_argument("--control-token", required=True)
     parser.add_argument("--gpu", type=int, required=True)
     parser.add_argument("--nic", required=True)
     parser.add_argument("--gid-index", type=int, default=5)
@@ -22,6 +23,7 @@ def main():
     args = parser.parse_args()
     assert 0 <= args.control_port <= 65535
     assert args.role == "target" or args.control_port != 0
+    assert len(args.control_token) == 32
     assert args.gpu >= 0
     assert 0 <= args.gid_index <= 255
     assert "," not in args.nic and args.nic.startswith("mlx5_")
@@ -130,11 +132,12 @@ def main():
                     ),
                     flush=True,
                 )
-                connection, address = listener.accept()
-                assert address[0] == args.peer_ip, address
+                connection, _ = listener.accept()
                 with connection:
                     connection.settimeout(30)
                     with connection.makefile("rwb") as stream:
+                        # Proxies may rewrite the TCP source IP, so pair by a per-run token.
+                        assert receive(stream) == {"token": args.control_token}
                         send(
                             stream,
                             {
@@ -160,6 +163,7 @@ def main():
                 source_address=(args.local_ip, 0),
             ) as connection:
                 with connection.makefile("rwb") as stream:
+                    send(stream, {"token": args.control_token})
                     peer = receive(stream)
                     assert peer["nbytes"] == nbytes
                     assert peer["segment"].startswith(args.peer_ip + ":")
