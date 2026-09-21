@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run with Bash 3.2+; kubectl, tar, uv, GNU timeout, and the selected Python are required.
+# Run with Bash 3.2+; kubectl, tar, GNU timeout, and the selected Python are required.
 set -euo pipefail
 if [[ $# != 7 ]]; then
     printf 'Usage: bash %s WHEEL CONTEXT NAMESPACE PREFILL_POD DECODE_POD CONTAINER PYTHON\n' "$0" >&2
@@ -52,8 +52,9 @@ prepare() {
     printf '%s\n' "$remote" > "$logs/$role-directory.txt" || return
     "${k[@]}" cp "$wheel" "$pod:$remote/$wheel_name" -c "$container" >&2 || return
     "${k[@]}" cp "$probe_dir/probe.py" "$pod:$remote/probe.py" -c "$container" >&2 || return
-    if ! "${k[@]}" exec "$pod" -c "$container" -- timeout -k 5s 90s uv pip install \
-        --no-deps --no-index --python "$python" --target "$remote/wheel" "$remote/$wheel_name" \
+    # Preserve the package and its sibling auditwheel libraries without a package installer.
+    if ! "${k[@]}" exec "$pod" -c "$container" -- timeout -k 5s 90s "$python" -m zipfile \
+        -e "$remote/$wheel_name" "$remote/wheel" \
         > "$logs/$role-install.log" 2>&1; then
         cat "$logs/$role-install.log" >&2
         return 1

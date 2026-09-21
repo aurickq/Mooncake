@@ -2,8 +2,13 @@
 
 This probes GPU RDMA WRITE and READ between two existing pods without changing
 their serving packages or restarting their workloads. Run from a machine with
-`kubectl` access to both pods. Each container needs `uv`, `timeout`, `tar`, and an
+`kubectl` access to both pods. Each container needs `timeout`, `tar`, and an
 existing Python environment with a compatible PyTorch installation.
+
+The wheel is unpacked using Python's standard library, preserving the package
+and its sibling auditwheel libraries. No package installer is needed. This
+probe expects the module and libraries at the wheel root, not in `.data` paths;
+it does not install command-line entry points.
 
 ```bash
 bash run.sh /path/to/package.whl CONTEXT NAMESPACE SOURCE_POD TARGET_POD CONTAINER /path/to/python
