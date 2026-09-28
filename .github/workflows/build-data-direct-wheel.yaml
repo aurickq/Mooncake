@@ -3,7 +3,7 @@ name: Build Data Direct wheel
 on:
   push:
     branches:
-      - codex/rdma-data-direct-wheel-test
+      - codex/rdma-data-direct-alignment-wheel-20260928
 
 permissions:
   contents: read
@@ -16,4 +16,4 @@ jobs:
       architecture: arm64
       python-versions: '["3.13"]'
       artifact-prefix: mooncake-data-direct-cuda13-arm64
-      version-override: 0.3.13+datadirect.c6fc7e14
+      version-override: 0.3.13+datadirect.f3a06a67
