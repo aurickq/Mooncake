@@ -21,7 +21,7 @@ The available isolation mechanisms are complementary:
 | Model | Different model families or incompatible model variants | SGLang `--served-model-name`; vLLM derives the name from the model path |
 | Deployment or release | Rolling upgrades, canaries, and environments that use the same model name | SGLang `extra_backend_tag`; vLLM `cache_prefix` |
 | Request group | Reuse within one application, user group, or other isolation domain | vLLM API `cache_salt` |
-| Mooncake tenant | A logical object namespace with its own quota | Store client `tenant_id` and master `--enable_multi_tenants=true` |
+| Mooncake tenant | A logical object namespace with optional quota admission | Store client `tenant_id` and master `--enable_multi_tenants=true` |
 
 Instances should use identical values only when their KV cache entries are compatible and are intended to be shared. Prefill and decode instances in the same deployment must therefore use the same values.
 
@@ -121,9 +121,9 @@ Use a new namespace whenever cache compatibility may have changed, including cha
 
 ## Mooncake Tenants
 
-Mooncake tenant configuration is independent of the framework-level model, release, and request namespaces. When the master is started with `--enable_multi_tenants=true`, the client `tenant_id` selects a tenant-scoped object namespace and the master applies that tenant's quota during admission.
+Mooncake tenant configuration is independent of the framework-level model, release, and request namespaces. When the master is started with `--enable_multi_tenants=true`, the client `tenant_id` selects a tenant-scoped object namespace. Without a quota connector, tenants share physical capacity under global eviction; configuring a connector additionally enforces tenant registration and quotas.
 
-Use the same `tenant_id` for framework instances that should share one quota and tenant namespace. See [Multi-Tenant Deployment](multi-tenancy) for configuration details.
+Use the same `tenant_id` for framework instances that should share a tenant namespace. Tenant IDs are supplied by trusted clients, not authenticated access boundaries. See [Multi-Tenant Deployment](multi-tenancy) for configuration details.
 
 ## Operational Checklist
 

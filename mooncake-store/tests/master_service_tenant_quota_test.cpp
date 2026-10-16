@@ -11,8 +11,10 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -443,6 +445,115 @@ TEST_F(MasterServiceTenantQuotaTest,
                     .has_value());
     EXPECT_FALSE(
         service.GetTenantQuotaSnapshot(TenantId("tenant-a")).has_value());
+}
+
+TEST_F(MasterServiceTenantQuotaTest,
+       NoQuotaConnectorSharesCapacityWithoutCollapsingNamespaces) {
+    MasterService service(MasterServiceConfig::builder()
+                              .set_enable_multi_tenants(true)
+                              .set_default_kv_lease_ttl(0)
+                              .set_eviction_high_watermark_ratio(1.0)
+                              .build());
+    ASSERT_TRUE(service.IsTenantIsolationEnabled());
+    ASSERT_FALSE(service.IsTenantQuotaEnabled());
+    UUID client_id = MountSegment(service, 4096);
+    const TenantId a("a"), b("b");
+    // Admission can use most of the shared pool without registering a tenant.
+    PutComplete(service, client_id, "same-key", a, 3072);
+    PutComplete(service, client_id, "same-key", b, 256);
+    auto a_replicas = service.GetReplicaList("same-key", a);
+    auto b_replicas = service.GetReplicaList("same-key", b);
+    ASSERT_TRUE(a_replicas.has_value());
+    ASSERT_TRUE(b_replicas.has_value());
+    ASSERT_EQ(a_replicas->replicas.size(), 1u);
+    ASSERT_EQ(b_replicas->replicas.size(), 1u);
+    EXPECT_NE(a_replicas->replicas.front()
+                  .get_memory_descriptor()
+                  .buffer_descriptor.buffer_address_,
+              b_replicas->replicas.front()
+                  .get_memory_descriptor()
+                  .buffer_descriptor.buffer_address_);
+    EXPECT_FALSE(service.ExistKey("same-key", TenantId::Default()).value());
+    EXPECT_TRUE(service.ListTenantQuotaSnapshots().empty());
+
+    RunTenantEvictionPass(service);
+    EXPECT_TRUE(service.ExistKey("same-key", a).value());
+    MasterServiceTestPeer(service).RunBatchEvictForTesting(1.0, 1.0);
+    EXPECT_FALSE(service.ExistKey("same-key", a).value());
+    EXPECT_FALSE(service.ExistKey("same-key", b).value());
+    PutComplete(service, client_id, "reclaimed", b, 3072);
+
+    AddCompletedDiskReplica(service, client_id, "cold", a, 128);
+    StorageObjectMetadata metadata;
+    metadata.data_size = 256;
+    metadata.transport_endpoint = "disk-endpoint";
+    ASSERT_TRUE(service
+                    .NotifyOffloadSuccess(
+                        client_id,
+                        {{.tenant_id = b.value(), .key = "cold", .size = 256}},
+                        {metadata})
+                    .has_value());
+    EXPECT_TRUE(service.ExistKey("cold", a).value());
+    EXPECT_TRUE(service.ExistKey("cold", b).value());
+    EXPECT_FALSE(service.ExistKey("cold", TenantId::Default()).value());
+    EXPECT_TRUE(service.ListTenantQuotaSnapshots().empty());
+}
+
+TEST_F(MasterServiceTenantQuotaTest, UriOnlyPolicyStillEnforcesTenantQuota) {
+    MasterService service(MasterServiceConfig::builder()
+                              .set_enable_multi_tenants(true)
+                              .set_tenant_quota_connector_uri(
+                                  WritePolicyFile({{TenantId("a"), 64}}))
+                              .build());
+    ASSERT_TRUE(service.IsTenantQuotaEnabled());
+    UUID client_id = MountSegment(service);
+    auto over = service.PutStart(client_id, "large", TenantId("a"), 128,
+                                 MemoryConfig());
+    ASSERT_FALSE(over.has_value());
+    EXPECT_EQ(over.error(), ErrorCode::TENANT_QUOTA_EXCEEDED);
+    auto unknown =
+        service.PutStart(client_id, "small", TenantId("b"), 1, MemoryConfig());
+    ASSERT_FALSE(unknown.has_value());
+    EXPECT_EQ(unknown.error(), ErrorCode::TENANT_NOT_REGISTERED);
+    PutComplete(service, client_id, "small", TenantId("a"), 32);
+    EXPECT_EQ(Snapshot(service, TenantId("a")).charged_bytes, 32u);
+}
+
+TEST_F(MasterServiceTenantQuotaTest,
+       EmptyQuotaPolicyDoesNotDisableEnforcement) {
+    MasterService service(MakeConfig({}));
+    ASSERT_TRUE(service.IsTenantQuotaEnabled());
+    UUID client_id = MountSegment(service);
+    for (const auto& tenant : {TenantId("a"), TenantId::Default()}) {
+        auto put =
+            service.PutStart(client_id, "key", tenant, 1, MemoryConfig());
+        ASSERT_FALSE(put.has_value());
+        EXPECT_EQ(put.error(), ErrorCode::TENANT_NOT_REGISTERED);
+    }
+}
+
+TEST_F(MasterServiceTenantQuotaTest, InvalidQuotaConnectorFailsStartup) {
+    const auto valid = WritePolicyFile({{TenantId("a"), 64}});
+    const auto missing = WritePolicyFile({});
+    ASSERT_TRUE(std::filesystem::remove(missing));
+    const auto malformed = WritePolicyFile({});
+    std::ofstream(malformed) << "version: 1\ntenants: [\n";
+    for (const auto& [type, uri] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"file", ""},
+             {"etcd", ""},
+             {"unknown", valid},
+             {"file", missing},
+             {"", missing},
+             {"file", malformed}}) {
+        SCOPED_TRACE(type + ":" + uri);
+        const auto config = MasterServiceConfig::builder()
+                                .set_enable_multi_tenants(true)
+                                .set_tenant_quota_connector_type(type)
+                                .set_tenant_quota_connector_uri(uri)
+                                .build();
+        EXPECT_THROW({ MasterService service(config); }, std::exception);
+    }
 }
 
 TEST_F(MasterServiceTenantQuotaTest,

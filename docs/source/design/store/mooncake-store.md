@@ -64,13 +64,13 @@ and publishes `latest` and `fallback` control pointers. A standby or a newly
 elected Master restores the newest valid baseline and replays the remaining
 batch OpLog suffix before serving.
 
-### Tenant Quota
+### Tenant Namespaces and Quotas
 
-The Master Service can optionally enforce strict multi-tenant memory quota admission. This feature is disabled by default. When `enable_multi_tenants=false`, request tenant IDs are ignored for object placement, all objects use the `default` namespace, and tenant quota management requests return `UNAVAILABLE_IN_CURRENT_MODE`.
+The Master Service can isolate object namespaces by tenant and optionally enforce memory quotas. Both features are disabled by default. When `enable_multi_tenants=false`, request tenant IDs are ignored for object placement and all objects use the `default` namespace. With `enable_multi_tenants=true` and both quota connector fields empty, tenant namespaces share physical capacity under global eviction without registration or quota accounting. Configuring a quota connector additionally enables strict registration and quota admission. Tenant quota management requests return `UNAVAILABLE_IN_CURRENT_MODE` unless quota admission is enabled.
 
 See [Multi-Tenant Deployment](../../deployment/multi-tenancy.md) for configuration details.
 
-Effective quota is recomputed from the current registered memory capacity:
+With quota admission enabled, effective quota is recomputed from the current registered memory capacity:
 
 - If explicit tenant requests fit within the registered memory capacity, tenants receive their requested quotas and remaining capacity stays unallocated.
 - If explicit tenant requests exceed registered memory capacity, explicit tenants receive quota scaled proportionally by request size.
@@ -81,7 +81,7 @@ Effective quota is recomputed from the current registered memory capacity:
 
 Admin policy changes are persisted before the final in-memory policy is applied. `PUT` writes the connector first and then applies the policy in memory. `DELETE` first marks the tenant unregistered in memory to block concurrent writes, verifies the tenant is empty, writes the connector, and rolls back the in-memory mark if the connector write fails.
 
-Snapshots restore object runtime state only. Tenant quota policy is always loaded from the connector after metadata restore, then usage and effective quota are rebuilt from restored metadata and current registered capacity. If the connector cannot be loaded in strict multi-tenant mode, startup fails.
+Snapshots restore object runtime state only. When quota admission is enabled, tenant quota policy is loaded from the connector after metadata restore, then usage and effective quota are rebuilt from restored metadata and current registered capacity. If a configured connector cannot be loaded, startup fails.
 
 ### Object Information Maintenance
 

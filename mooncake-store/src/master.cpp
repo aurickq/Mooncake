@@ -162,7 +162,7 @@ DEFINE_double(tenant_eviction_high_watermark_ratio,
               "Per-tenant high watermark, as a fraction of that tenant's own "
               "effective quota, at which background eviction starts for it. "
               "Defaults to the same value as -eviction_high_watermark_ratio; "
-              "0 disables it. Only meaningful with -enable_multi_tenants. "
+              "0 disables it. Only meaningful with tenant quota admission. "
               "This is the only mechanism that frees space for a tenant: "
               "admission itself never evicts, it rejects with "
               "TENANT_QUOTA_EXCEEDED. Without it, a tenant whose effective "
@@ -404,11 +404,14 @@ DEFINE_uint64(
     quota_bytes, 0,
     "Quota for storage backend in bytes (0 = use default 90% of capacity)");
 DEFINE_bool(enable_multi_tenants, false,
-            "Enable strict multi-tenant namespace and quota admission");
-DEFINE_string(tenant_quota_connector_type, "file",
-              "Tenant quota policy connector type");
+            "Enable tenant namespaces; a configured quota connector also "
+            "enables strict tenant registration and quota admission");
+DEFINE_string(tenant_quota_connector_type, "",
+              "Tenant quota policy connector type: file or etcd. Empty with a "
+              "URI selects file; empty without a URI disables tenant quotas");
 DEFINE_string(tenant_quota_connector_uri, "",
-              "Tenant quota policy connector URI");
+              "Tenant quota policy connector URI; required when a connector "
+              "type is set");
 
 // Task manager configuration
 DEFINE_uint32(max_total_finished_tasks, 10000,
@@ -1525,6 +1528,13 @@ int main(int argc, char* argv[]) {
         << master_config.eviction_high_watermark_ratio
         << ", tenant_eviction_high_watermark_ratio="
         << master_config.tenant_eviction_high_watermark_ratio
+        << ", tenant_mode="
+        << (!master_config.enable_multi_tenants
+                ? "disabled"
+                : (master_config.tenant_quota_connector_type.empty() &&
+                           master_config.tenant_quota_connector_uri.empty()
+                       ? "namespace-only"
+                       : "strict-quota"))
         << ", enable_ha=" << master_config.enable_ha
         << ", enable_oplog=" << master_config.enable_oplog
         << ", weight_management_oplog_capability_confirmed="

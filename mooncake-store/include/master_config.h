@@ -158,7 +158,7 @@ struct MasterConfig {
     bool enable_disk_eviction;
     uint64_t quota_bytes;
     bool enable_multi_tenants = false;
-    std::string tenant_quota_connector_type = "file";
+    std::string tenant_quota_connector_type;
     std::string tenant_quota_connector_uri;
 
     uint64_t snapshot_interval_seconds;
@@ -275,7 +275,7 @@ class MasterServiceSupervisorConfig {
     bool enable_disk_eviction = true;
     uint64_t quota_bytes = 0;
     bool enable_multi_tenants = false;
-    std::string tenant_quota_connector_type = "file";
+    std::string tenant_quota_connector_type;
     std::string tenant_quota_connector_uri;
     uint32_t max_total_finished_tasks = DEFAULT_MAX_TOTAL_FINISHED_TASKS;
     uint32_t max_total_pending_tasks = DEFAULT_MAX_TOTAL_PENDING_TASKS;
@@ -592,7 +592,7 @@ class WrappedMasterServiceConfig {
     bool enable_disk_eviction = true;
     uint64_t quota_bytes = 0;
     bool enable_multi_tenants = false;
-    std::string tenant_quota_connector_type = "file";
+    std::string tenant_quota_connector_type;
     std::string tenant_quota_connector_uri;
 
     uint64_t snapshot_interval_seconds = DEFAULT_SNAPSHOT_INTERVAL_SEC;
@@ -881,7 +881,7 @@ class MasterServiceConfigBuilder {
     bool enable_disk_eviction_ = true;
     uint64_t quota_bytes_ = 0;
     bool enable_multi_tenants_ = false;
-    std::string tenant_quota_connector_type_ = "file";
+    std::string tenant_quota_connector_type_;
     std::string tenant_quota_connector_uri_;
     uint64_t put_start_discard_timeout_sec_ = DEFAULT_PUT_START_DISCARD_TIMEOUT;
     uint64_t put_start_release_timeout_sec_ = DEFAULT_PUT_START_RELEASE_TIMEOUT;
@@ -1253,7 +1253,7 @@ class MasterServiceConfig {
     bool enable_disk_eviction = true;
     uint64_t quota_bytes = 0;
     bool enable_multi_tenants = false;
-    std::string tenant_quota_connector_type = "file";
+    std::string tenant_quota_connector_type;
     std::string tenant_quota_connector_uri;
 
     uint64_t snapshot_interval_seconds = DEFAULT_SNAPSHOT_INTERVAL_SEC;

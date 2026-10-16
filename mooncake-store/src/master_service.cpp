@@ -238,13 +238,11 @@ MasterService::MasterService(const MasterServiceConfig& config)
         LOG(INFO) << "Local-first allocation strategy enabled";
     }
 
-    if (enable_multi_tenants_) {
+    if (enable_multi_tenants_ && (!config.tenant_quota_connector_type.empty() ||
+                                  !config.tenant_quota_connector_uri.empty())) {
         tenant_quota_manager_.OpenPolicyStore(
             config.tenant_quota_connector_type,
             config.tenant_quota_connector_uri, cluster_id_);
-    }
-
-    if (enable_multi_tenants_) {
         tenant_quota_manager_.LoadPoliciesOrThrow();
         RebuildTenantQuotaUsageFromMetadata();
     }
@@ -638,8 +636,12 @@ TieredStorageUsageSnapshot MasterService::GetStorageUsageSnapshot() const {
     return snapshot;
 }
 
-bool MasterService::IsTenantQuotaEnabled() const {
+bool MasterService::IsTenantIsolationEnabled() const {
     return enable_multi_tenants_;
+}
+
+bool MasterService::IsTenantQuotaEnabled() const {
+    return tenant_quota_manager_.HasPolicyStore();
 }
 
 std::vector<TenantQuotaSnapshot> MasterService::ListTenantQuotaSnapshots()
@@ -656,7 +658,7 @@ tl::expected<TenantQuotaSnapshot, ErrorCode>
 MasterService::UpsertTenantQuotaPolicy(const TenantId& tenant_id,
                                        uint64_t requested_quota_bytes) {
     assert(tenant_id.IsValid());
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return tl::make_unexpected(ErrorCode::UNAVAILABLE_IN_CURRENT_MODE);
     }
     return tenant_quota_manager_.UpsertPolicy(tenant_id, requested_quota_bytes);
@@ -665,7 +667,7 @@ MasterService::UpsertTenantQuotaPolicy(const TenantId& tenant_id,
 tl::expected<std::optional<TenantQuotaSnapshot>, ErrorCode>
 MasterService::DeleteTenantQuotaPolicy(const TenantId& tenant_id) {
     assert(tenant_id.IsValid());
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return tl::make_unexpected(ErrorCode::UNAVAILABLE_IN_CURRENT_MODE);
     }
     return tenant_quota_manager_.DeletePolicy(
@@ -1197,7 +1199,7 @@ MasterService::ObjectIdentity MasterService::MakeObjectIdentityForRequest(
 }
 
 bool MasterService::IsTenantRegistered(const TenantId& tenant_id) const {
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return true;
     }
     return tenant_quota_manager_.IsTenantRegistered(tenant_id);
@@ -1206,8 +1208,8 @@ bool MasterService::IsTenantRegistered(const TenantId& tenant_id) const {
 tl::expected<TenantId, ErrorCode> MasterService::ResolveTenantIdForWrite(
     const TenantId& tenant_id) const {
     assert(tenant_id.IsValid());
-    if (!enable_multi_tenants_) {
-        return TenantId::Default();
+    if (!IsTenantQuotaEnabled()) {
+        return ResolveRequestTenantId(tenant_id);
     }
     auto policy_lock = tenant_quota_manager_.LockPolicy();
     return ResolveTenantIdForWriteLocked(tenant_id);
@@ -1216,8 +1218,8 @@ tl::expected<TenantId, ErrorCode> MasterService::ResolveTenantIdForWrite(
 tl::expected<TenantId, ErrorCode> MasterService::ResolveTenantIdForWriteLocked(
     const TenantId& tenant_id) const {
     assert(tenant_id.IsValid());
-    if (!enable_multi_tenants_) {
-        return TenantId::Default();
+    if (!IsTenantQuotaEnabled()) {
+        return ResolveRequestTenantId(tenant_id);
     }
     if (!IsTenantRegistered(tenant_id)) {
         return tl::make_unexpected(ErrorCode::TENANT_NOT_REGISTERED);
@@ -1278,7 +1280,7 @@ uint64_t MasterService::GetTenantQuotaAllocatableCapacityBytes() {
 }
 
 void MasterService::RecomputeTenantEffectiveQuotas() {
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return;
     }
     tenant_quota_manager_.Recompute();
@@ -1287,7 +1289,7 @@ void MasterService::RecomputeTenantEffectiveQuotas() {
 MasterService::TenantState& MasterService::GetOrCreateTenantState(
     MetadataShard& shard, const TenantId& tenant_id) {
     auto it = shard.tenants.try_emplace(tenant_id).first;
-    if (enable_multi_tenants_ && it->second.quota_account == nullptr) {
+    if (IsTenantQuotaEnabled() && it->second.quota_account == nullptr) {
         it->second.quota_account = &tenant_quota_manager_.AccountFor(tenant_id);
     }
     return it->second;
@@ -1295,7 +1297,7 @@ MasterService::TenantState& MasterService::GetOrCreateTenantState(
 
 TenantQuotaHandle MasterService::GetBoundTenantQuotaHandle(
     const TenantState& tenant_state) const {
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return nullptr;
     }
     assert(tenant_state.quota_account != nullptr);
@@ -1304,7 +1306,7 @@ TenantQuotaHandle MasterService::GetBoundTenantQuotaHandle(
 
 tl::expected<void, ErrorCode> MasterService::ChargeTenantQuota(
     TenantQuotaHandle account, uint64_t bytes) {
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return {};
     }
     if (account == nullptr) {
@@ -1327,7 +1329,7 @@ tl::expected<void, ErrorCode> MasterService::ChargeTenantQuota(
 
 void MasterService::ReleaseTenantQuota(TenantQuotaHandle account,
                                        uint64_t bytes) {
-    if (!enable_multi_tenants_ || bytes == 0) {
+    if (!IsTenantQuotaEnabled() || bytes == 0) {
         return;
     }
     if (account == nullptr) {
@@ -1341,7 +1343,7 @@ void MasterService::ReleaseTenantQuota(TenantQuotaHandle account,
 }
 
 void MasterService::RebuildTenantQuotaUsageFromMetadata() {
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return;
     }
 
@@ -1666,7 +1668,7 @@ size_t MasterService::EraseReplicasWithCacheTotalAccounting(
 
 tl::expected<void, ErrorCode> MasterService::SettlePrimaryWriteQuotaIfReady(
     TenantState& tenant_state, ObjectMetadata& metadata) {
-    if (!enable_multi_tenants_) {
+    if (!IsTenantQuotaEnabled()) {
         return {};
     }
     if (!metadata.IsValid()) {
@@ -1744,7 +1746,7 @@ void MasterService::FinalizeRemovedReplicasAfterDurable(
         metadata.HasReplica([](const Replica& replica) {
             return replica.is_memory_replica() && replica.is_processing();
         });
-    if (enable_multi_tenants_ && erased_memory_replicas > 0 &&
+    if (IsTenantQuotaEnabled() && erased_memory_replicas > 0 &&
         has_processing_memory) {
         const uint64_t committed_charge =
             metadata.quota_ledger.CommittedBytes();
@@ -2089,7 +2091,7 @@ MasterService::ObjectMap::iterator MasterService::EraseMetadata(
     }
     switch (quota_mode) {
         case QuotaEraseMode::kFull:
-            if (enable_multi_tenants_ &&
+            if (IsTenantQuotaEnabled() &&
                 metadata.quota_ledger.TotalChargedBytes() != 0) {
                 auto release_result = metadata.quota_ledger.ReleaseAll(
                     GetBoundTenantQuotaHandle(tenant_state));
@@ -2099,14 +2101,14 @@ MasterService::ObjectMap::iterator MasterService::EraseMetadata(
             break;
         case QuotaEraseMode::kPreserveOld:
         case QuotaEraseMode::kAbortOnly:
-            if (enable_multi_tenants_ &&
+            if (IsTenantQuotaEnabled() &&
                 metadata.quota_ledger.PendingBytes() != 0) {
                 auto refund_result = metadata.quota_ledger.RefundPending(
                     GetBoundTenantQuotaHandle(tenant_state));
                 LogTenantQuotaLedgerError(refund_result, "refund_pending",
                                           tenant_id, key);
             }
-            if (enable_multi_tenants_ &&
+            if (IsTenantQuotaEnabled() &&
                 metadata.quota_ledger.TotalChargedBytes() != 0) {
                 LOG(ERROR)
                     << "tenant quota ledger still owns bytes during preserved "
@@ -4173,7 +4175,7 @@ tl::expected<void, ErrorCode> MasterService::RestoreFromStandbyState(
             MasterMetricManager::instance().on_client_liveness_record_removed(
                 record->state());
         }
-        if (enable_multi_tenants_) {
+        if (IsTenantQuotaEnabled()) {
             RebuildTenantQuotaUsageFromMetadata();
         }
     };
@@ -4200,7 +4202,7 @@ tl::expected<void, ErrorCode> MasterService::RestoreFromStandbyState(
         }
     }
 
-    if (enable_multi_tenants_) {
+    if (IsTenantQuotaEnabled()) {
         RebuildTenantQuotaUsageFromMetadata();
     }
 
@@ -5324,7 +5326,7 @@ auto MasterService::InsertMetadata(
         FreeDfsReplicas(key, replicas);
         return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
     }
-    if (enable_multi_tenants_) {
+    if (IsTenantQuotaEnabled()) {
         auto adopt_result = it->second.metadata.quota_ledger.AdoptPendingCharge(
             GetBoundTenantQuotaHandle(tenant_state), pending_quota_charge);
         if (!adopt_result) {
@@ -5790,9 +5792,9 @@ auto MasterService::AddReplicaForRetainedClient(const UUID& client_id,
                                                 Replica& replica)
     -> tl::expected<bool, ErrorCode> {
     assert(tenant_id.IsValid());
-    TenantId normalized_tenant;
+    TenantId normalized_tenant = ResolveRequestTenantId(tenant_id);
     std::unique_lock<std::mutex> policy_lock;
-    if (enable_multi_tenants_) {
+    if (IsTenantQuotaEnabled()) {
         policy_lock = tenant_quota_manager_.LockPolicy();
         auto normalized_tenant_result =
             ResolveTenantIdForWriteLocked(tenant_id);
@@ -5999,7 +6001,7 @@ auto MasterService::PutRevoke(const UUID& client_id, const std::string& key,
     EraseReplicasWithCacheTotalAccounting(metadata, target_pred);
     metadata.ClearPendingSoftPinIfNoViableReplica();
     const uint64_t after_charge = CompletedMemoryQuotaCharge(metadata);
-    if (enable_multi_tenants_ && before_charge > after_charge) {
+    if (IsTenantQuotaEnabled() && before_charge > after_charge) {
         auto release_result = metadata.quota_ledger.ReleaseCommitted(
             GetBoundTenantQuotaHandle(accessor.GetTenantState()),
             before_charge - after_charge);
@@ -6464,7 +6466,7 @@ auto MasterService::UpsertStart(const UUID& client_id, const std::string& key,
                 TenantQuotaLedger replacement_charge;
                 auto* quota_account = GetBoundTenantQuotaHandle(tenant_state);
                 const bool has_replacement_charge =
-                    enable_multi_tenants_ &&
+                    IsTenantQuotaEnabled() &&
                     metadata.quota_ledger.TotalChargedBytes() != 0;
 
                 // A leased memory snapshot still references the old replica
@@ -6605,7 +6607,7 @@ auto MasterService::UpsertStart(const UUID& client_id, const std::string& key,
 
     // Over-quota is rejected outright. Making room is the background pass's
     // job (EvictTenantsOverWatermark), not the write path's: the same contract
-    // the pool has when enable_multi_tenants is false -- this write fails, the
+    // the pool has without tenant quotas -- this write fails, the
     // evictor builds headroom, the next one succeeds. Evicting inline instead
     // put a scan of up to kNumShards shard write locks on admission, which
     // every concurrent writer at the ceiling repeated for the same freed
@@ -7233,7 +7235,7 @@ tl::expected<void, ErrorCode> MasterService::CopyEnd(
 
     SyncCacheTotalAccounting(metadata);
 
-    if (enable_multi_tenants_) {
+    if (IsTenantQuotaEnabled()) {
         auto settle_result = metadata.quota_ledger.SettleAdditional(
             GetBoundTenantQuotaHandle(accessor.GetTenantState()),
             task.pending_quota_charge_bytes, completed_quota_charge);
@@ -7630,7 +7632,7 @@ tl::expected<void, ErrorCode> MasterService::MoveEnd(
             replica->mark_complete();
         }
     }
-    if (enable_multi_tenants_) {
+    if (IsTenantQuotaEnabled()) {
         auto settle_result = metadata.quota_ledger.SettleAdditional(
             GetBoundTenantQuotaHandle(accessor.GetTenantState()),
             task.pending_quota_charge_bytes,
@@ -7650,7 +7652,7 @@ tl::expected<void, ErrorCode> MasterService::MoveEnd(
             });
         if (!source_replica.empty()) {
             FreeDfsReplicas(key, source_replica);
-            if (enable_multi_tenants_) {
+            if (IsTenantQuotaEnabled()) {
                 auto release_result = metadata.quota_ledger.ReleaseCommitted(
                     GetBoundTenantQuotaHandle(accessor.GetTenantState()),
                     static_cast<uint64_t>(metadata.TotalLength()));
@@ -8406,7 +8408,7 @@ bool MasterService::CleanupStaleHandles(
     CancelPromotionTaskForRemovedReplicas(tenant_state, record,
                                           removed_replica_ids);
     const uint64_t after_charge = CompletedMemoryQuotaCharge(metadata);
-    if (enable_multi_tenants_ && before_charge > after_charge) {
+    if (IsTenantQuotaEnabled() && before_charge > after_charge) {
         auto release_result = metadata.quota_ledger.ReleaseCommitted(
             GetBoundTenantQuotaHandle(tenant_state),
             before_charge - after_charge);
@@ -10071,7 +10073,7 @@ auto MasterService::NotifyPromotionSuccess(const UUID& client_id,
     }
     const uint64_t completed_bytes = promotion_task->object_size;
     if (committed) {
-        if (enable_multi_tenants_) {
+        if (IsTenantQuotaEnabled()) {
             auto settle_result = metadata.quota_ledger.SettleAdditional(
                 GetBoundTenantQuotaHandle(tenant_state),
                 promotion_task->pending_quota_charge_bytes, completed_bytes);
@@ -10214,7 +10216,7 @@ auto MasterService::NotifyPromotionFailure(const UUID& client_id,
 }
 
 void MasterService::EvictTenantsOverWatermark() {
-    if (!enable_multi_tenants_ ||
+    if (!IsTenantQuotaEnabled() ||
         tenant_eviction_high_watermark_ratio_ <= 0.0) {
         return;
     }
@@ -10304,7 +10306,7 @@ void MasterService::EvictionThreadFunc() {
         // the case this exists for is a tenant over its OWN watermark while
         // the pool is still under the pool-wide one, so it must not be gated
         // on the pool-level condition having fired.
-        if (enable_multi_tenants_ &&
+        if (IsTenantQuotaEnabled() &&
             tenant_eviction_high_watermark_ratio_ > 0.0) {
             const auto steady_now = std::chrono::steady_clock::now();
             if (steady_now >= next_tenant_eviction_time) {
@@ -10680,7 +10682,7 @@ MasterService::TenantQuotaEvictionResult
 MasterService::EvictTenantMemoryForQuota(const TenantId& tenant_id,
                                          uint64_t target_bytes) {
     TenantQuotaEvictionResult total;
-    if (!enable_multi_tenants_ || target_bytes == 0) {
+    if (!IsTenantQuotaEnabled() || target_bytes == 0) {
         return total;
     }
 
@@ -11022,7 +11024,7 @@ void MasterService::BatchEvict(double evict_ratio_target,
                 deferred_replicas.emplace_back(std::move(replicas));
             }
             const uint64_t after_charge = CompletedMemoryQuotaCharge(metadata);
-            if (enable_multi_tenants_ && before_charge > after_charge) {
+            if (IsTenantQuotaEnabled() && before_charge > after_charge) {
                 auto release_result = metadata.quota_ledger.ReleaseCommitted(
                     GetBoundTenantQuotaHandle(tenant_state),
                     before_charge - after_charge);

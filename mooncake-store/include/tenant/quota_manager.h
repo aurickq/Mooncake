@@ -50,6 +50,7 @@ class TenantQuotaManager {
     // std::invalid_argument when it cannot be opened.
     void OpenPolicyStore(const std::string& type, const std::string& uri,
                          const std::string& cluster_id);
+    bool HasPolicyStore() const { return policy_store_ != nullptr; }
     // Replaces the table's policies with the persisted ones. Throws when the
     // store cannot be read or holds a policy out of range.
     void LoadPoliciesOrThrow();

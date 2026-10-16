@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <ylt/coro_rpc/coro_rpc_server.hpp>
 
@@ -39,7 +40,10 @@ class ScopedPolicyFile {
     std::filesystem::path path_;
 };
 
-TEST(BatchReplicaClearTenantRpcTest, UsesClientTenantAndKeepsTenantsIsolated) {
+class BatchReplicaClearTenantRpcTest : public ::testing::TestWithParam<bool> {};
+
+TEST_P(BatchReplicaClearTenantRpcTest,
+       UsesClientTenantAndKeepsTenantsIsolated) {
     constexpr char kTenant[] = "tenant-a";
     constexpr char kSharedKey[] = "shared-batch-clear-key";
     constexpr uint64_t kObjectSize = 1024;
@@ -50,7 +54,7 @@ TEST(BatchReplicaClearTenantRpcTest, UsesClientTenantAndKeepsTenantsIsolated) {
         {std::string(TenantId::kDefaultValue), 64 * 1024 * 1024},
         {kTenant, 64 * 1024 * 1024},
     };
-    {
+    if (GetParam()) {
         std::ofstream output(policy_file.path());
         ASSERT_TRUE(output.is_open());
         output << FormatTenantQuotaPolicyYaml(policy);
@@ -61,8 +65,10 @@ TEST(BatchReplicaClearTenantRpcTest, UsesClientTenantAndKeepsTenantsIsolated) {
     service_config.default_kv_lease_ttl = 0;
     service_config.enable_metric_reporting = false;
     service_config.enable_multi_tenants = true;
-    service_config.tenant_quota_connector_type = "file";
-    service_config.tenant_quota_connector_uri = policy_file.path().string();
+    if (GetParam()) {
+        service_config.tenant_quota_connector_type = "file";
+        service_config.tenant_quota_connector_uri = policy_file.path().string();
+    }
     auto service = std::make_shared<WrappedMasterService>(service_config);
 
     const auto ports = getFreeTcpPorts(1);
@@ -85,15 +91,27 @@ TEST(BatchReplicaClearTenantRpcTest, UsesClientTenantAndKeepsTenantsIsolated) {
 
     ReplicateConfig replicate_config;
     replicate_config.replica_num = 1;
+    const std::vector<std::string> keys = {kSharedKey, "batch-key", "regex-key",
+                                           "all-key"};
     for (const std::string& tenant :
          {std::string(kTenant), std::string(TenantId::kDefaultValue)}) {
-        auto put_start = service->PutStart(client_id, kSharedKey, kObjectSize,
-                                           replicate_config, tenant);
-        ASSERT_TRUE(put_start.has_value()) << toString(put_start.error());
-        auto put_end =
-            service->PutEnd(client_id, ObjectMeta{kSharedKey, std::nullopt},
-                            ReplicaType::MEMORY, tenant);
-        ASSERT_TRUE(put_end.has_value()) << toString(put_end.error());
+        MasterClient client(client_id, nullptr, tenant);
+        ASSERT_EQ(client.Connect("127.0.0.1:" + std::to_string(ports.front())),
+                  ErrorCode::OK);
+        const size_t size = tenant == kTenant ? kObjectSize : 2 * kObjectSize;
+        for (const auto& key : keys) {
+            auto put = client.PutStart(key, {size}, replicate_config);
+            ASSERT_TRUE(put.has_value()) << toString(put.error());
+            ASSERT_TRUE(client.PutEnd({key, std::nullopt}, ReplicaType::MEMORY)
+                            .has_value());
+        }
+        auto read = client.GetReplicaList(kSharedKey);
+        ASSERT_TRUE(read.has_value());
+        ASSERT_EQ(read->replicas.size(), 1u);
+        EXPECT_EQ(read->replicas.front()
+                      .get_memory_descriptor()
+                      .buffer_descriptor.size_,
+                  size);
     }
 
     {
@@ -105,6 +123,15 @@ TEST(BatchReplicaClearTenantRpcTest, UsesClientTenantAndKeepsTenantsIsolated) {
             tenant_client.BatchReplicaClear({kSharedKey}, client_id, "");
         ASSERT_TRUE(cleared.has_value()) << toString(cleared.error());
         EXPECT_EQ(cleared.value(), std::vector<std::string>{kSharedKey});
+        auto batch = tenant_client.BatchRemove({"batch-key"}, true);
+        ASSERT_EQ(batch.size(), 1u);
+        ASSERT_TRUE(batch.front().has_value());
+        auto regex = tenant_client.RemoveByRegex("^regex-key$", true);
+        ASSERT_TRUE(regex.has_value());
+        EXPECT_EQ(regex.value(), 1);
+        auto all = tenant_client.RemoveAll(true);
+        ASSERT_TRUE(all.has_value());
+        EXPECT_EQ(all.value(), 1);
     }
 
     auto tenant_exists = service->ExistKey(kSharedKey, kTenant);
@@ -120,10 +147,15 @@ TEST(BatchReplicaClearTenantRpcTest, UsesClientTenantAndKeepsTenantsIsolated) {
         ASSERT_EQ(default_client.Connect("127.0.0.1:" +
                                          std::to_string(ports.front())),
                   ErrorCode::OK);
-        auto cleared =
-            default_client.BatchReplicaClear({kSharedKey}, client_id, "");
-        ASSERT_TRUE(cleared.has_value()) << toString(cleared.error());
-        EXPECT_EQ(cleared.value(), std::vector<std::string>{kSharedKey});
+        auto present = default_client.BatchExistKey(keys);
+        ASSERT_EQ(present.size(), keys.size());
+        for (const auto& result : present) {
+            ASSERT_TRUE(result.has_value());
+            EXPECT_TRUE(result.value());
+        }
+        auto cleared = default_client.RemoveAll(true);
+        ASSERT_TRUE(cleared.has_value());
+        EXPECT_EQ(cleared.value(), static_cast<long>(keys.size()));
     }
 
     default_exists =
@@ -131,8 +163,36 @@ TEST(BatchReplicaClearTenantRpcTest, UsesClientTenantAndKeepsTenantsIsolated) {
     ASSERT_TRUE(default_exists.has_value());
     EXPECT_FALSE(default_exists.value());
 
+    // An omitted identity remains the default namespace; malformed identities
+    // must not silently become the default when quota enforcement is absent.
+    auto empty = service->PutStart(client_id, "empty", kObjectSize,
+                                   replicate_config, "");
+    EXPECT_EQ(empty.has_value(), !GetParam());
+    if (!GetParam()) {
+        ASSERT_TRUE(service
+                        ->PutEnd(client_id, {"empty", std::nullopt},
+                                 ReplicaType::MEMORY, "")
+                        .has_value());
+        EXPECT_TRUE(service->ExistKey("empty").value());
+        EXPECT_FALSE(service->ExistKey("empty", kTenant).value());
+        auto quotas = service->ListTenantQuotaSnapshots();
+        ASSERT_FALSE(quotas.has_value());
+        EXPECT_EQ(quotas.error(), ErrorCode::UNAVAILABLE_IN_CURRENT_MODE);
+    }
+    EXPECT_FALSE(service
+                     ->PutStart(client_id, "invalid", kObjectSize,
+                                replicate_config, "_invalid")
+                     .has_value());
+    EXPECT_FALSE(service->ExistKey("empty", "_invalid").has_value());
+
     server.stop();
 }
+
+INSTANTIATE_TEST_SUITE_P(QuotaModes, BatchReplicaClearTenantRpcTest,
+                         ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                             return info.param ? "WithPolicy" : "WithoutPolicy";
+                         });
 
 }  // namespace
 }  // namespace mooncake

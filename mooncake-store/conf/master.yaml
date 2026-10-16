@@ -20,7 +20,7 @@ eviction_high_watermark_ratio: 1.0
 # quota. Defaults to 0.9 in code, mirroring eviction_high_watermark_ratio; set
 # 0.0 to disable the pass and keep the historical behaviour.
 #
-# Only relevant with enable_multi_tenants. This pass is the only mechanism that
+# Only relevant with tenant quota admission. This pass is the only mechanism that
 # frees space for a tenant -- admission never evicts, it rejects with
 # TENANT_QUOTA_EXCEEDED and lets this pass build the headroom for the retry.
 #
@@ -39,8 +39,12 @@ dynamic_replication_heat_window_seconds: 10
 dynamic_replication_admission_qps_threshold: 0.8
 dynamic_replication_max_memory_replicas: 2
 
+# Enable tenant namespaces. With both connector fields empty, tenants share
+# physical capacity without registration or per-tenant quotas.
 enable_multi_tenants: false
-tenant_quota_connector_type: "file"
+# A URI alone selects file. An explicit file/etcd type requires a valid URI;
+# connector errors fail startup rather than disabling quota admission.
+tenant_quota_connector_type: ""
 tenant_quota_connector_uri: ""
 
 enable_ha: false

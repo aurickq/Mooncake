@@ -447,7 +447,8 @@ tl::expected<void, std::string> EtcdTenantQuotaPolicyStore::Save(
 tl::expected<std::unique_ptr<TenantQuotaPolicyStore>, std::string>
 CreateTenantQuotaPolicyStore(const std::string& type, const std::string& uri,
                              const std::string& cluster_id) {
-    if (type == "file") {
+    // URI-only configurations have historically selected the file connector.
+    if (type.empty() || type == "file") {
         if (uri.empty()) {
             return tl::make_unexpected(
                 "tenant quota file connector requires a non-empty uri");

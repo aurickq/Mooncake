@@ -2,9 +2,29 @@
 
 ## Configure the Master
 
+Tenant namespaces and quota admission are disabled by default:
+
+| Master configuration | Behavior |
+|----------------------|----------|
+| `enable_multi_tenants=false` | Client tenant IDs are ignored; objects use the `default` namespace |
+| `enable_multi_tenants=true`, both quota connector fields empty | Separate tenant namespaces sharing physical capacity, without tenant registration or quotas |
+| `enable_multi_tenants=true`, quota connector configured | Separate tenant namespaces with strict tenant registration and memory quota admission |
+
+### Namespace Isolation Without Quotas
+
+To isolate object keys without assigning storage budgets, omit both quota connector settings:
+
+```bash
+mooncake_master --enable_multi_tenants=true
+```
+
+Clients with different valid `tenant_id` values use separate object namespaces, even when their object keys are identical. No tenant policy file or registration is required. Tenants share the physical storage pool and its existing global eviction policy; there are no per-tenant capacity reservations or eviction guarantees, and a busy tenant can displace another tenant's cache entries. Quota accounting, quota-driven eviction, and the quota admin API are disabled.
+
+Tenant IDs are supplied by clients and are not authenticated. Use this feature with trusted clients; it does not prevent a client from selecting another tenant's ID.
+
 ### File Connector
 
-Tenant quota admission is disabled by default. Enable strict multi-tenant mode on the master when you want memory writes admitted against connector-managed per-tenant quota:
+Configure a connector when you want memory writes admitted against connector-managed per-tenant quotas:
 
 ```bash
 mooncake_master \
@@ -12,6 +32,8 @@ mooncake_master \
   --tenant_quota_connector_type=file \
   --tenant_quota_connector_uri=/etc/mooncake/tenant_quotas.yaml
 ```
+
+If `tenant_quota_connector_uri` is set and `tenant_quota_connector_type` is omitted or empty, the connector defaults to `file`, preserving URI-only configurations. An explicit `file` or `etcd` type requires a non-empty URI. Invalid connector settings or an unreadable policy fail startup; they never fall back to namespace-only mode.
 
 ### etcd Connector
 
@@ -29,7 +51,7 @@ The etcd connector stores the policy at `mooncake-store/<cluster_id>/tenant_quot
 
 ## Define the Tenant Policy
 
-The policy must use schema version `1`; tenant names must be non-empty, unique, must not start with `_`, and must not contain NUL or control characters; quotas must be positive integers with optional `B`, `KB`, `MB`, `GB`, or `TB` units:
+This section applies when a quota connector is configured. The policy must use schema version `1`; tenant names must be non-empty, unique, must not start with `_`, and must not contain NUL or control characters; quotas must be positive integers with optional `B`, `KB`, `MB`, `GB`, or `TB` units:
 
 ```yaml
 version: 1
@@ -84,7 +106,7 @@ Each tenant quota snapshot returns:
 
 `charged_bytes` includes completed MEMORY replicas and in-flight MEMORY allocations. Put, Copy, Move, and promotion charge quota when admission starts; failed, revoked, partially completed, or expired operations refund the unused charge. `admission_closed` is `true` when the account rejects new writes, including after its explicit policy is removed.
 
-In HA mode, quota admin requests are served only by the active master service. Standby, candidate, or inactive services return HTTP 503. If strict multi-tenant mode is disabled, the quota admin API returns HTTP 409 with `UNAVAILABLE_IN_CURRENT_MODE`. Deleting a non-empty tenant returns HTTP 409 with `TENANT_NOT_EMPTY`.
+In HA mode, quota admin requests are served only by the active master service. Standby, candidate, or inactive services return HTTP 503. Without quota admission, including namespace-only mode, the quota admin API returns HTTP 409 with `UNAVAILABLE_IN_CURRENT_MODE`. Deleting a non-empty tenant returns HTTP 409 with `TENANT_NOT_EMPTY`.
 
 ## SGLang
 

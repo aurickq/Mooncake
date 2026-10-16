@@ -1901,6 +1901,32 @@ TEST_F(MasterServiceHATest, RestoreFromStandbyRebuildsTenantQuotaAccounting) {
     EXPECT_EQ(service.GetTenantQuotaSnapshot(tenant_id)->charged_bytes, 0);
 }
 
+TEST_F(MasterServiceHATest, RestoreKeepsTenantsWithoutQuotaPolicy) {
+    MasterService service(
+        MasterServiceConfig::builder().set_enable_multi_tenants(true).build());
+    const std::string endpoint = "shared_restore_segment";
+    auto a = MakeStandbyObject("same-key", endpoint);
+    auto b = MakeStandbyObject("same-key", endpoint);
+    a.tenant_id = "a";
+    b.tenant_id = "b";
+    a.metadata.replicas.front()
+        .get_memory_descriptor()
+        .buffer_descriptor.buffer_address_ = kDefaultSegmentBase;
+    b.metadata.replicas.front()
+        .get_memory_descriptor()
+        .buffer_descriptor.buffer_address_ = kDefaultSegmentBase + 2048;
+    ASSERT_TRUE(service
+                    .RestoreFromStandbySnapshot(
+                        {a, b}, 7, {MakeStandbyMemorySegment(endpoint)})
+                    .has_value());
+    EXPECT_EQ(ReplicaCountForTesting(service, TenantId("a"), "same-key"), 1);
+    EXPECT_EQ(ReplicaCountForTesting(service, TenantId("b"), "same-key"), 1);
+    EXPECT_EQ(ReplicaCountForTesting(service, kDefaultTenant, "same-key"), 0);
+    EXPECT_TRUE(service.ListTenantQuotaSnapshots().empty());
+    ASSERT_TRUE(service.Remove("same-key", TenantId("a"), true).has_value());
+    EXPECT_EQ(ReplicaCountForTesting(service, TenantId("b"), "same-key"), 1);
+}
+
 TEST_F(MasterServiceHATest, UnreadableRestoredMemoryReplicaIsNotEvictable) {
     constexpr uint64_t object_size = 1024;
     auto config = MasterServiceConfig::builder()
@@ -4359,6 +4385,7 @@ TEST_F(MasterServiceHATest, BatchRecordSubmissionHelpersUseOrderedWriter) {
                               .set_default_kv_lease_ttl(50)
                               .set_enable_ha(true)
                               .set_enable_oplog(true)
+                              .set_enable_multi_tenants(true)
                               .set_cluster_id(cluster_id)
                               .set_oplog_batch_max_entries(1)
                               .build();
@@ -4388,12 +4415,18 @@ TEST_F(MasterServiceHATest, BatchRecordSubmissionHelpersUseOrderedWriter) {
     EXPECT_EQ(2u, finalized_entry.sequence_id);
     EXPECT_EQ(OpType::REMOVE, finalized_entry.op_type);
     EXPECT_EQ("remove_key", finalized_entry.object_key);
+    EXPECT_EQ("tenant", finalized_entry.tenant_id);
 
     OpLogBatchStorage storage(cluster_id, *backend);
     DurablePrefix prefix;
     ASSERT_EQ(ErrorCode::OK, storage.ReadDurablePrefix(prefix));
     EXPECT_EQ(2u, prefix.batch_id);
     EXPECT_EQ(2u, prefix.last_seq);
+    OpLogBatchRecord first;
+    ReadBatchEventually(storage, 1, first);
+    ASSERT_EQ(first.entries.size(), 1u);
+    EXPECT_EQ(first.entries.front().tenant_id, "tenant");
+    EXPECT_FALSE(service.IsTenantQuotaEnabled());
 }
 
 TEST_F(MasterServiceHATest,

@@ -725,14 +725,16 @@ mooncake_master \
 | `--eviction_high_watermark_ratio` | `0.90` | Usage ratio triggering eviction |
 | `--client_ttl` | `10` s | Seconds before a silent client is considered disconnected |
 
-### Tenant Quota
+### Tenant Namespaces and Quotas
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--enable_multi_tenants` | `false` | Enable strict tenant registration and per-tenant memory quota admission |
-| `--tenant_quota_connector_type` | `file` | Tenant quota policy connector type: `file` or `etcd` when built with `STORE_USE_ETCD=ON` |
+| `--enable_multi_tenants` | `false` | Enable tenant namespaces; a quota connector additionally enables strict registration and memory quota admission |
+| `--tenant_quota_connector_type` | empty | `file` or `etcd` (requires `STORE_USE_ETCD=ON`); empty selects `file` if a URI is supplied, otherwise disables tenant quotas |
 | `--tenant_quota_connector_uri` | empty | Connector URI; for `file`, the writable YAML policy path; for `etcd`, the endpoints string |
-| `--tenant_eviction_high_watermark_ratio` | `0.90` | Usage ratio of a tenant's own effective quota that triggers background eviction for that tenant; `0` disables it |
+| `--tenant_eviction_high_watermark_ratio` | `0.90` | With quota admission enabled, usage ratio of a tenant's effective quota that triggers background eviction; `0` disables it |
+
+With `--enable_multi_tenants=true` and both connector fields empty, tenants need no registration and share physical capacity under global eviction. Configuring a connector enables strict quota admission; an explicit connector type with an empty URI, or an unreadable policy, fails startup. See [Multi-Tenant Deployment](multi-tenancy.md) for configuration and isolation limits.
 
 ### High Availability
 

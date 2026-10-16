@@ -94,7 +94,7 @@ static constexpr double DEFAULT_EVICTION_HIGH_WATERMARK_RATIO = 0.90;
 // quota. Mirrors the pool-wide default above so that a tenant gets the same
 // evict-to-make-room contract the pool has; 0.0 disables the pass and restores
 // the pre-existing behaviour, where only the pool-wide watermark can trigger
-// background eviction. Inert unless enable_multi_tenants is set.
+// background eviction. Inert unless a tenant quota connector is configured.
 static constexpr double DEFAULT_TENANT_EVICTION_HIGH_WATERMARK_RATIO = 0.90;
 static constexpr double DEFAULT_NOF_EVICTION_RATIO = 0.05;
 static constexpr double DEFAULT_NOF_EVICTION_HIGH_WATERMARK_RATIO = 0.90;

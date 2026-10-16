@@ -135,6 +135,7 @@ class MasterService {
     ~MasterService();
 
     [[nodiscard]] TieredStorageUsageSnapshot GetStorageUsageSnapshot() const;
+    bool IsTenantIsolationEnabled() const;
     bool IsTenantQuotaEnabled() const;
     std::vector<TenantQuotaSnapshot> ListTenantQuotaSnapshots() const;
     std::optional<TenantQuotaSnapshot> GetTenantQuotaSnapshot(
@@ -1740,7 +1741,7 @@ class MasterService {
                     *tenant_state_, it_->second, removed_replica_ids);
                 const uint64_t after_charge =
                     service_->CompletedMemoryQuotaCharge(metadata);
-                if (service_->enable_multi_tenants_ &&
+                if (service_->IsTenantQuotaEnabled() &&
                     before_charge > after_charge) {
                     auto release_result =
                         metadata.quota_ledger.ReleaseCommitted(
